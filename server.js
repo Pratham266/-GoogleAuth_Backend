@@ -9,6 +9,8 @@ const GoogleStrategy = require("passport-google-oauth20").Strategy;
 const findOrCreate = require("mongoose-findorcreate");
 const cookieParser = require("cookie-parser");
 const cors = require('cors');
+const authenticate = require('./Middleware/authenticate');
+
 app.use(cookieParser());
 
 app.use(cors());
@@ -25,6 +27,7 @@ app.use(session({
     resave: false,
     saveUninitialized: false
   }));
+
   app.use(passport.initialize());
   app.use(passport.session());
 
@@ -58,9 +61,11 @@ passport.serializeUser(function(user, done) {
   done(null, user.id);
 });
 
+
 passport.deserializeUser(function(id, done) {
     User.findById(id)
       .then((user) => {
+        console.log('Deserializing user:', user);
         done(null, user);
       })
       .catch((err) => {
@@ -87,23 +92,49 @@ app.get("/auth/google",
   passport.authenticate("google", { scope: ["profile","email"],prompt: "select_account" })
 );
 
+// app.get("/auth/google/callback",
+//   passport.authenticate("google", { failureRedirect: "http://localhost:3000" }),
+//   function(req, res) {
+//     console.log(req.user.username);
+//   //  alert()
+//   console.log(req.isAuthenticated())
+//     res.redirect("http://localhost:3000/home");
+//   //  res.status(200).json({message: "You have successfully logged in!"});
+//   }
+// );
+
 app.get("/auth/google/callback",
   passport.authenticate("google", { failureRedirect: "http://localhost:3000" }),
   function(req, res) {
-    // Successful authentication, redirect secrets.
     console.log(req.user.username);
-    // res.cookie("user_email",req.user.username,{maxAge:86400000})//cookie set for the 1 day
-    res.redirect("http://localhost:3000/home");
+    req.session.save(function(err) {
+      if (err) {
+        console.log(err);
+      }
+      res.redirect("http://localhost:3000/logout");
+    });
   }
 );
 
+app.get("/checkuserlogin",passport.authenticate('session'), (req, res) => {
+  console.log(req.isAuthenticated());
+  if (req.isAuthenticated()===true) {
+    res.status(200).json({ message: "User is logged in" });
+  } else {
+    res.status(201).json({ error: "User is not logged in" });
+  }
+});
+
+
 //LOGOUT OPTION
-app.get("/logout", function(req, res){
-  console.log("in logout")
-    // res.clearCookie("connect.sid");
-    // res.clearCookie('connect.sid', { domain: 'localhost', path: '/' });
-    res.redirect("http://localhost:3000/");
-    console.log("below logout")
+app.get("/logout",function(req, res){
+  console.log("Logout")
+ // console.log(req.isAuthenticated())
+    req.logout(function(err) {
+      if (err) { return next(err); }
+      console.log(req.isAuthenticated())
+      res.status(200).json({message: "You have been logged out."});
+    });
   });
 
 app.listen((process.env.BACKEND_PORT),()=>{
