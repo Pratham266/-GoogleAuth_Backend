@@ -5,137 +5,141 @@ const mongoose = require("mongoose");
 const session = require("express-session");
 const passport = require("passport");
 const passportLocalMongoose = require("passport-local-mongoose");
-const GoogleStrategy = require("passport-google-oauth20").Strategy;
-const findOrCreate = require("mongoose-findorcreate");
+var GoogleStrategy = require("passport-google-oauth2").Strategy;
 const cookieParser = require("cookie-parser");
 const cors = require('cors');
-const authenticate = require('./Middleware/authenticate');
 
+
+app.use(session({ secret: "mysecretkeyforgoogleauth" }));
+app.use(passport.initialize());
+app.use(passport.session());
 app.use(cookieParser());
+app.use(cors({origin: 'http://localhost:3000',credentials: true}));
+app.use(express.json());
 
-app.use(cors());
-app.use(cors({
-  origin: 'http://localhost:3000',
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-
-//passport session code
-app.use(session({
-    secret: "Our little secret.",
-    resave: false,
-    saveUninitialized: false
-  }));
-
-  app.use(passport.initialize());
-  app.use(passport.session());
-
-  //mongoose connection
-mongoose.connect(
-    'mongodb://localhost:27017/GoogleAuth',
-    {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-    }
-);
-mongoose.connection.on('connected', () => {
-    console.log('Connected to the database');
-});
-mongoose.connection.on('error', (err) => {
-    console.log('Error connecting to the database:', err);
+mongoose.connect('mongodb://localhost:27017/GoogleAuth', { useNewUrlParser: true, useUnifiedTopology: true }).then(() => {
+    console.log("Connected to database");
+}).catch((err) => {
+    console.log("Error in connecting to the database : ", err);
 });
 
-//user schema
-const userSchema = new mongoose.Schema ({
-    username: String,
-    googleId: String,
-  });
-
-userSchema.plugin(passportLocalMongoose);
-userSchema.plugin(findOrCreate);
-const User = new mongoose.model("User", userSchema);
-
-passport.use(User.createStrategy());
-passport.serializeUser(function(user, done) {
-  done(null, user.id);
+const userSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    maxLength: [30, "Name cannot exceed 30 characters"],
+    minLength: [4, "Name should have more than 4 characters"],
+},
+email: {
+  type: String,
+  unique: true,
+},
+googleId: {
+    type: String,
+    default: null
+}
 });
 
+const User = mongoose.model('User', userSchema);
 
-passport.deserializeUser(function(id, done) {
-    User.findById(id)
-      .then((user) => {
-        console.log('Deserializing user:', user);
-        done(null, user);
-      })
-      .catch((err) => {
-        done(err);
-      });
-  });
-  
 passport.use(new GoogleStrategy({
-    clientID: process.env.CLIENT_ID,
-    clientSecret: process.env.CLIENT_SECRET,
-    callbackURL: "http://localhost:4000/auth/google/callback",
-    userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo"
-  },
-  function(accessToken, refreshToken, profile, cb) {
-    //console.log(profile);
-    User.findOrCreate({username: profile.emails[0].value,googleId:profile.id }, function (err, user) {
-      return cb(err, user);
-    });
+  clientID: process.env.CLIENT_ID ,
+  clientSecret: process.env.CLIENT_SECRET,
+  callbackURL: "http://localhost:4000/auth/google/callback",
+  passReqToCallback: true
+},
+  function (request, accessToken, refreshToken, profile, done) {
+      // Find or Create user here
+      User.findOne({ email: profile.email }).then((currentUser) => {
+          if (currentUser) {
+              // already have this user
+              // console.log('user is: ', profile);
+              done(null, currentUser);
+          } else {
+              // if not, create user in our db
+              new User({
+                  name: profile.displayName,
+                  email: profile.email,
+                  googleId: profile.id
+              }).save().then((newUser) => {
+                  // console.log('created new user: ', newUser);
+                  done(null, newUser);
+              });
+          }
+      });
   }
 ));
 
-//ROUTE MIDDLWARE
-app.get("/auth/google",
-  passport.authenticate("google", { scope: ["profile","email"],prompt: "select_account" })
-);
+passport.serializeUser(function (user, done) {
+  done(null, user.id);
+});
 
-// app.get("/auth/google/callback",
-//   passport.authenticate("google", { failureRedirect: "http://localhost:3000" }),
-//   function(req, res) {
-//     console.log(req.user.username);
-//   //  alert()
-//   console.log(req.isAuthenticated())
-//     res.redirect("http://localhost:3000/home");
-//   //  res.status(200).json({message: "You have successfully logged in!"});
-//   }
-// );
-
-app.get("/auth/google/callback",
-  passport.authenticate("google", { failureRedirect: "http://localhost:3000" }),
-  function(req, res) {
-    console.log(req.user.username);
-    req.session.save(function(err) {
-      if (err) {
-        console.log(err);
-      }
-      res.redirect("http://localhost:3000/logout");
-    });
-  }
-);
-
-app.get("/checkuserlogin",passport.authenticate('session'), (req, res) => {
-  console.log(req.isAuthenticated());
-  if (req.isAuthenticated()===true) {
-    res.status(200).json({ message: "User is logged in" });
-  } else {
-    res.status(201).json({ error: "User is not logged in" });
-  }
+passport.deserializeUser(function (id, done) {
+  User.findById(id, function (err, user) {
+      done(err, user);
+  });
 });
 
 
-//LOGOUT OPTION
-app.get("/logout",function(req, res){
-  console.log("Logout")
- // console.log(req.isAuthenticated())
-    req.logout(function(err) {
-      if (err) { return next(err); }
-      console.log(req.isAuthenticated())
-      res.status(200).json({message: "You have been logged out."});
+app.get("/auth/google",(req,res)=>{
+  console.log("In googlelogin 1");
+  passport.authenticate('google', {
+    scope: ['email', 'profile']
+  })(req, res);
+});
+
+app.get("/auth/google/callback",(req, res, next)=>{
+  passport.authenticate('google', (err, user, info) => {
+    if (err) {
+      return next(err);
+    }
+    if (!user) {
+      return res.redirect('/login');
+    }
+    req.logIn(user, (err) => {
+      if (err) {
+        return next(err);
+      }
+      console.log("User authenticated:", req.user);
+      res.redirect('http://localhost:3000/logout');
     });
-  });
+  })(req, res, next);
+});
+
+// function isAuthenticated(req, res, next) {
+//   console.log("in isAuthenticated middlware");
+//   if (req.isAuthenticated()) {
+//     return next();
+//   } else {
+//     res.status(401).send({ success: "false", message: "Unauthorized" });
+//   }
+// }
+
+
+app.get("/logout",async(req,res)=>{
+  console.log("In logout");
+  console.log(req.isAuthenticated());
+  res.set('Access-Control-Allow-Origin', 'http://localhost:3000');
+  res.set('Access-Control-Allow-Credentials', 'true');
+  console.log("In logout if", req.user);
+    req.logout((err) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).send({ success: "false", message: "Unable to logout user" });
+      }
+      return res.status(200).send({ success: "true", message: "Successfully Logged Out" });
+    });
+    console.log("at the end");
+})
+
+app.post("/isLoggedIn",async(req,res)=>{
+  console.log("req.user is : ", req.user);
+  console.log(req.isAuthenticated());
+  if (req.user) {
+    return res.send({ success: "true", message: "Logged in", user: req.user });
+  }else{
+    res.status(200).send({ success: "false", message: "Not logged in", user: req.user });
+  };
+})
 
 app.listen((process.env.BACKEND_PORT),()=>{
     console.log("app is running on port number",process.env.BACKEND_PORT)
